@@ -1,32 +1,41 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Driver Panel - Live Location Update</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Student - Bus Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: auto; text-align: center; background: #f9f9f9; }
-    input, button { padding: 10px; margin: 10px 0; width: 100%; font-size: 16px; }
-    #status { margin-top: 15px; font-weight: bold; }
-    #logoutBtn { margin-top: 20px; }
+    body { font-family: Arial; padding: 20px; background: #f0f0f0; text-align: center; }
+    #map { height: 60vh; width: 100%; margin-top: 20px; display: none; }
+    input, button, select { padding: 10px; margin: 10px 0; font-size: 16px; width: 80%; }
+    #logoutBtn { display: none; }
+    #searchRouteBox { display: none; }
+    #error { color: red; }
   </style>
 </head>
 <body>
-  <h2>🚍 Driver Panel - Update Location</h2>
+  <h2>🎓 Student Login - Bus Tracker</h2>
 
   <div id="loginBox">
-    <input type="text" id="driverId" placeholder="Driver ID" />
-    <input type="password" id="driverPass" placeholder="Password" />
-    <button onclick="loginDriver()">Login</button>
-    <p id="loginError" style="color:red;"></p>
+    <input type="text" id="studentId" placeholder="Student ID"><br>
+    <input type="password" id="studentPass" placeholder="Password"><br>
+    <button onclick="loginStudent()">Login</button>
+    <p id="error"></p>
   </div>
 
-  <div id="driverPanel" style="display:none;">
-    <p>Welcome, <span id="driverName"></span>!</p>
-    <button onclick="startTracking()">Start Location Update</button>
-    <button onclick="stopTracking()" disabled id="stopBtn">Stop Location Update</button>
-    <button id="logoutBtn" onclick="logoutDriver()">Logout</button>
-    <p id="status"></p>
+  <div id="searchRouteBox">
+    <select id="routeSelect">
+      <option value="">-- Select Bus Route --</option>
+    </select>
+    <button onclick="searchBus()">Track Bus</button>
   </div>
+
+  <button id="logoutBtn" onclick="logoutStudent()">Logout</button>
+
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
   <!-- Firebase SDKs -->
   <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
@@ -34,7 +43,6 @@
   <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
 
   <script>
-    // ✅ Firebase Configuration
     const firebaseConfig = {
       apiKey: "AIzaSyA01RW_-AK7DzZp9sd92GDZpExIVvMVbBY",
       authDomain: "ringasbustracker.firebaseapp.com",
@@ -45,102 +53,88 @@
       appId: "1:894338476193:web:125d89e35d8ada1822a8e0"
     };
 
-    // ✅ Initialize Firebase
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
     const db = firebase.database();
 
-    let watchId = null;
-    let currentDriverId = null;
-    let driverRoute = null;
+    let map, marker;
 
-    function loginDriver() {
-      const id = document.getElementById("driverId").value.trim();
-      const pass = document.getElementById("driverPass").value.trim();
-      const email = id + "@busapp.com";
-      const errorP = document.getElementById("loginError");
+    function loginStudent() {
+      const id = document.getElementById("studentId").value.trim();
+      const pass = document.getElementById("studentPass").value.trim();
+      const email = id + "@studentapp.com";
+      const errorP = document.getElementById("error");
 
       if (!id || !pass) {
-        errorP.innerText = "Driver ID और Password भरें";
+        errorP.innerText = "ID और पासवर्ड भरें";
         return;
       }
 
       auth.signInWithEmailAndPassword(email, pass)
         .then(() => {
-          errorP.innerText = "";
-          currentDriverId = id;
           document.getElementById("loginBox").style.display = "none";
-          document.getElementById("driverPanel").style.display = "block";
-          document.getElementById("driverName").innerText = currentDriverId;
-
-          // रूट लाना
-          db.ref("drivers/" + currentDriverId + "/route").once("value").then(snapshot => {
-            driverRoute = snapshot.val();
-            if (!driverRoute) {
-              alert("आपका बस रूट सेट नहीं है, कृपया एडमिन से संपर्क करें।");
-            }
-          });
+          document.getElementById("searchRouteBox").style.display = "block";
+          document.getElementById("logoutBtn").style.display = "inline-block";
+          errorP.innerText = "";
+          loadRoutes();
         })
-        .catch(error => {
-          errorP.innerText = error.message;
+        .catch(err => {
+          errorP.innerText = err.message;
         });
     }
 
-    function startTracking() {
-      if (!navigator.geolocation) {
-        alert("यह ब्राउज़र लोकेशन सपोर्ट नहीं करता।");
-        return;
-      }
+    function logoutStudent() {
+      auth.signOut().then(() => location.reload());
+    }
 
-      if (!driverRoute) {
-        alert("रूट सेट नहीं है, लोकेशन अपडेट नहीं कर सकते।");
-        return;
-      }
+    function loadRoutes() {
+      const routeSelect = document.getElementById("routeSelect");
+      routeSelect.innerHTML = '<option value="">-- Select Bus Route --</option>';
 
-      document.getElementById("status").innerText = "लोकेशन ट्रैकिंग शुरू हुई...";
-      document.getElementById("stopBtn").disabled = false;
-
-      watchId = navigator.geolocation.watchPosition(position => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-
-        // लोकेशन Firebase में सेव करें
-        db.ref(driverRoute).set({
-          lat: lat,
-          lng: lng,
-          updatedAt: Date.now()
-        });
-
-        document.getElementById("status").innerText = `लोकेशन अपडेट: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-      }, error => {
-        document.getElementById("status").innerText = "लोकेशन अपडेट में समस्या: " + error.message;
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 5000
+      db.ref("drivers").once("value").then(snapshot => {
+        const drivers = snapshot.val();
+        if (drivers) {
+          let addedRoutes = new Set();
+          for (let driverId in drivers) {
+            const route = drivers[driverId].route;
+            if (!addedRoutes.has(route)) {
+              addedRoutes.add(route);
+              const routeName = route.replace("buses/", "").toUpperCase();
+              routeSelect.innerHTML += `<option value="${route}">${routeName}</option>`;
+            }
+          }
+        }
       });
     }
 
-    function stopTracking() {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-        document.getElementById("status").innerText = "लोकेशन अपडेट बंद कर दिया गया।";
-        document.getElementById("stopBtn").disabled = true;
+    function searchBus() {
+      const selectedRoute = document.getElementById("routeSelect").value;
+      if (!selectedRoute) {
+        alert("कृपया एक रूट चुनें");
+        return;
       }
-    }
 
-    function logoutDriver() {
-      stopTracking();
-      auth.signOut().then(() => {
-        currentDriverId = null;
-        driverRoute = null;
-        document.getElementById("driverPanel").style.display = "none";
-        document.getElementById("loginBox").style.display = "block";
-        document.getElementById("driverId").value = "";
-        document.getElementById("driverPass").value = "";
-        document.getElementById("loginError").innerText = "";
-        document.getElementById("status").innerText = "";
+      document.getElementById("map").style.display = "block";
+
+      if (!map) {
+        map = L.map("map").setView([27.3626, 75.5563], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+      }
+
+      if (!marker) {
+        marker = L.marker([27.3626, 75.5563]).addTo(map).bindPopup("🚌 Bus Location").openPopup();
+      }
+
+      db.ref(selectedRoute).on("value", snapshot => {
+        const data = snapshot.val();
+        if (data && data.lat && data.lng) {
+          const latlng = [data.lat, data.lng];
+          marker.setLatLng(latlng);
+          map.setView(latlng);
+          marker.getPopup().setContent("🚌 Bus is here");
+        }
       });
     }
   </script>
